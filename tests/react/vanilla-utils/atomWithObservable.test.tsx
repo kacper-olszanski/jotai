@@ -1,13 +1,14 @@
 import { Component, StrictMode, Suspense, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { act, fireEvent, render, waitFor } from '@testing-library/react'
-import { BehaviorSubject, Observable, Subject, delay, of } from 'rxjs'
+import { BehaviorSubject, Observable, Subject, delay, map, of } from 'rxjs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fromValue, makeSubject, pipe, toObservable } from 'wonka'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai/react'
 import { atom, createStore } from 'jotai/vanilla'
 import { atomWithObservable } from 'jotai/vanilla/utils'
 
+const consoleError = console.error
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   // A workaround for missing performance.mark after using fake timers
@@ -17,11 +18,23 @@ beforeEach(() => {
     performance.clearMarks = (() => {}) as any
     performance.clearMeasures = (() => {}) as any
   }
+  // suppress ErrorBoundary error log
+  console.error = vi.fn((message: unknown, ...optionalParams: unknown[]) => {
+    if (
+      typeof message === 'string' &&
+      (message.includes('Error: Uncaught [Error: Test Error]') ||
+        message.includes('at ErrorBoundary'))
+    ) {
+      return
+    }
+    return consoleError(message, ...optionalParams)
+  })
 })
 
 afterEach(() => {
   vi.runAllTimers()
   vi.useRealTimers()
+  console.error = consoleError
 })
 
 class ErrorBoundary extends Component<
@@ -794,5 +807,34 @@ describe('atomWithObservable vanilla tests', () => {
     await expect(store.get(async2Atom)).resolves.toBe(3)
 
     unsub()
+  })
+
+  it('can propagate updates with rxjs chains', async () => {
+    const store = createStore()
+
+    const single$ = new Subject<number>()
+    const double$ = single$.pipe(map((n) => n * 2))
+
+    const singleAtom = atomWithObservable(() => single$)
+    const doubleAtom = atomWithObservable(() => double$)
+
+    const unsubs = [
+      store.sub(singleAtom, () => {}),
+      store.sub(doubleAtom, () => {}),
+    ]
+
+    single$.next(1)
+    expect(store.get(singleAtom)).toBe(1)
+    expect(store.get(doubleAtom)).toBe(2)
+
+    single$.next(2)
+    expect(store.get(singleAtom)).toBe(2)
+    expect(store.get(doubleAtom)).toBe(4)
+
+    single$.next(3)
+    expect(store.get(singleAtom)).toBe(3)
+    expect(store.get(doubleAtom)).toBe(6)
+
+    unsubs.forEach((unsub) => unsub())
   })
 })
